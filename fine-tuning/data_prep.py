@@ -23,8 +23,7 @@ class PreferenceDataset(Dataset):
         prompt = example['prompt']
         chosen = example['chosen']
         rejected = example['rejected']
-        
-        # Tokenize prompt + chosen response
+
         chosen_text = f"{prompt} [SEP] {chosen}"
         chosen_encoding = self.tokenizer(
             chosen_text,
@@ -33,8 +32,7 @@ class PreferenceDataset(Dataset):
             truncation=True,
             return_tensors='pt'
         )
-        
-        # Tokenize prompt + rejected response
+
         rejected_text = f"{prompt} [SEP] {rejected}"
         rejected_encoding = self.tokenizer(
             rejected_text,
@@ -60,18 +58,11 @@ def prepare_data_splits(dataset_name="argilla/ultrafeedback-binarized-preference
                        val_ratio=0.15, 
                        test_ratio=0.15,
                        seed=42,
-                       subsample_size=None):  # NEW: subsample parameter
-    """
-    Load dataset and create train/val/test splits
-    
-    Args:
-        subsample_size: If provided, only use this many examples from the full dataset
-    """
-    # Load dataset
+                       subsample_size=None):  
+
     ds = load_dataset(dataset_name)
     train_data = ds['train']
-    
-    # Subsample if requested
+
     if subsample_size is not None:
         print(f"Subsampling {subsample_size} examples from {len(train_data)} total")
         indices = torch.randperm(len(train_data), generator=torch.Generator().manual_seed(seed))[:subsample_size]
@@ -102,9 +93,7 @@ def create_dataloaders(train_split, val_split, test_split,
                        batch_size=16, 
                        max_length=512,
                        num_workers=0):
-    """
-    Create PyTorch DataLoaders for train/val/test
-    """
+
     train_dataset = PreferenceDataset(train_split, tokenizer, max_length)
     val_dataset = PreferenceDataset(val_split, tokenizer, max_length)
     test_dataset = PreferenceDataset(test_split, tokenizer, max_length)
@@ -137,27 +126,24 @@ def create_dataloaders(train_split, val_split, test_split,
 
 
 def main():
-    # Use smaller, faster model for Mac
-    model_name = 'distilbert-base-uncased'  # 66M params, 2x faster than BERT
+    # attempt with smaller model
+    model_name = 'distilbert-base-uncased'  
     
     print(f"Loading tokenizer: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
     print(f"Successfully loaded: {model_name}")
-    
-    # Create data splits with subsampling
+
     train_split, val_split, test_split = prepare_data_splits(
-        subsample_size=10000  # Use only 10K examples for fast local training
+        subsample_size=10000  # We are using a small sample for signal
     )
-    
-    # Create dataloaders with smaller batch size for Mac
+
     train_loader, val_loader, test_loader = create_dataloaders(
         train_split, val_split, test_split,
         tokenizer,
-        batch_size=8,  # Smaller batch size for Mac
-        max_length=256  # Shorter sequences = faster training
+        batch_size=8, 
+        max_length=256 
     )
-    
-    # Test: Load one batch
+
     print("\nTesting data loading...")
     batch = next(iter(train_loader))
     
@@ -168,8 +154,7 @@ def main():
     print(f"Rejected attention_mask shape: {batch['rejected_attention_mask'].shape}")
     print(f"Chosen ratings: {batch['chosen_rating'][:3]}")
     print(f"Rejected ratings: {batch['rejected_rating'][:3]}")
-    
-    # Decode one example to verify
+
     print("\n--- Example from batch ---")
     chosen_text = tokenizer.decode(batch['chosen_input_ids'][0], skip_special_tokens=True)
     rejected_text = tokenizer.decode(batch['rejected_input_ids'][0], skip_special_tokens=True)
@@ -178,8 +163,8 @@ def main():
     print(f"Chosen rating: {batch['chosen_rating'][0].item()}")
     print(f"Rejected rating: {batch['rejected_rating'][0].item()}")
     
-    print(f"\n✓ Data preparation successful with {model_name}!")
-    print(f"✓ Using MPS-friendly settings: batch_size=8, max_length=256, 10K examples")
+    print(f"\n Data preparation successful with {model_name}!")
+    print(f" Using MPS-friendly settings: batch_size=8, max_length=256, 10K examples")
 
 
 if __name__ == "__main__":

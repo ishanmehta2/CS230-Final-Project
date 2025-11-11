@@ -13,7 +13,7 @@ class RewardModel(nn.Module):
         self.transformer = AutoModel.from_pretrained(model_name)
         self.pooling = pooling
         
-        # Reward head (maps hidden states → scalar score)
+        # reward head
         hidden_size = self.transformer.config.hidden_size
         self.reward_head = nn.Sequential(
             nn.Linear(hidden_size, 256),
@@ -43,9 +43,6 @@ class RewardModel(nn.Module):
 
 
 def bradley_terry_loss(score_chosen, score_rejected):
-    """
-    Bradley-Terry loss: -log(sigmoid(score_chosen - score_rejected))
-    """
     return -torch.log(torch.sigmoid(score_chosen - score_rejected)).mean()
 
 
@@ -56,7 +53,6 @@ def train_epoch(model, train_loader, optimizer, device):
     total = 0
     
     for batch_idx, batch in enumerate(train_loader):
-        # Move to device
         chosen_input_ids = batch['chosen_input_ids'].to(device)
         chosen_attention_mask = batch['chosen_attention_mask'].to(device)
         rejected_input_ids = batch['rejected_input_ids'].to(device)
@@ -93,7 +89,6 @@ def evaluate(model, val_loader, device):
     
     with torch.no_grad():
         for batch in val_loader:
-            # Move to device
             chosen_input_ids = batch['chosen_input_ids'].to(device)
             chosen_attention_mask = batch['chosen_attention_mask'].to(device)
             rejected_input_ids = batch['rejected_input_ids'].to(device)
@@ -115,7 +110,7 @@ def evaluate(model, val_loader, device):
 
 
 def main():
-    # Set device
+    # try to set GPU here from EC2 if possible. 
     if torch.cuda.is_available():
         device = torch.device('cuda')
         print("Using CUDA")
@@ -125,14 +120,13 @@ def main():
     else:
         device = torch.device('cpu')
         print("Using CPU")
-    
-    # Hyperparameters
+
     model_name = 'distilbert-base-uncased'
     batch_size = 8
     max_length = 256
     num_epochs = 3
     learning_rate = 2e-5
-    subsample_size = None  # Changed: Use full dataset (63.6K examples)
+    subsample_size = None  
     
     print(f"\n=== Training Configuration ===")
     print(f"Model: {model_name}")
@@ -185,7 +179,7 @@ def main():
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             torch.save(model.state_dict(), 'best_model.pt')
-            print(f"✓ Saved best model with val acc: {val_acc:.4f}")
+            print(f" Saved best model with val acc: {val_acc:.4f}")
     
     # Final test evaluation
     print("\n=== Final Test Evaluation ===")

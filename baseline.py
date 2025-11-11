@@ -6,7 +6,6 @@ import os
 import boto3
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
 load_dotenv()
 
 
@@ -68,7 +67,7 @@ def run_baseline_evaluation(baseline_data, bedrock_client, sample_size=None):
             # Using Meta Llama 3.1 70B Instruct on Bedrock
             model_id = "meta.llama3-70b-instruct-v1:0"
             
-            # Llama expects the prompt to be formatted with proper tags
+            # llama formatting for bedrock
             formatted_prompt = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{example['prompt']}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
             
             request_body = json.dumps({
