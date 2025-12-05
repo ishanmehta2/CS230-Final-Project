@@ -1,27 +1,3 @@
-"""
-Fine-tune and Evaluate Expert Judge Model on Together AI (UltraFeedback)
-
-This script:
-1. Converts SFT JSON to Together AI JSONL format
-2. Uploads and launches fine-tuning job
-3. Monitors job status
-4. Evaluates fine-tuned model on held-out test set
-5. Compares to baseline model
-
-Usage:
-    # Full training pipeline
-    python finetune_ultrafeedback.py train --input data/ultrafeedback_preference_sft.json --wait
-    
-    # Check job status
-    python finetune_ultrafeedback.py status <job_id>
-    
-    # Evaluate fine-tuned model
-    python finetune_ultrafeedback.py evaluate <model_id> --compare-baseline
-    
-    # Run baseline only
-    python finetune_ultrafeedback.py baseline --num-examples 200
-"""
-
 import json
 import argparse
 import time
@@ -30,60 +6,34 @@ import os
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 
-from together import Together
+from openai import OpenAI
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
-
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-
-# Together AI fine-tunable models
-# See: https://docs.together.ai/docs/fine-tuning-models
-DEFAULT_BASE_MODEL = "meta-llama/Meta-Llama-3.1-8B-Instruct-Reference"
-
-# For baseline comparison
-BASELINE_MODEL = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
-
-# Training defaults
+DEFAULT_BASE_MODEL = "gpt-4o-mini-2024-07-18"
+BASELINE_MODEL = "gpt-4o"
 DEFAULT_EPOCHS = 2
-DEFAULT_LEARNING_RATE = 1e-5
-DEFAULT_BATCH_SIZE = 8
-
-# File paths
 DEFAULT_INPUT_FILE = "data/ultrafeedback_preference_sft.json"
-DEFAULT_JSONL_FILE = "data/together_format.jsonl"
+DEFAULT_JSONL_FILE = "data/openai_format.jsonl"
 DEFAULT_SPLITS_FILE = "data/ultrafeedback_splits.json"
-
-# Prompt template (must match training format exactly)
 SYSTEM_MESSAGE = """You are an expert at analyzing responses to questions and instructions. Compare two responses objectively and determine which one is better and why. Consider factors like helpfulness, accuracy, relevance, clarity, and overall usefulness to the person asking the question."""
 
+def convert_to_openai_jsonl(input_file: str, output_file: str) -> int:
 
-# =============================================================================
-# FORMAT CONVERSION
-# =============================================================================
-
-def convert_to_together_jsonl(input_file: str, output_file: str) -> int:
-    """
-    Convert SFT JSON to Together AI JSONL format.
-    
-    Together expects JSONL with "messages" array containing role/content objects.
-    """
-    print(f"\nConverting {input_file} to Together JSONL format...")
+    print(f"\nConverting {input_file} to OpenAI JSONL format...")
     
     with open(input_file, 'r') as f:
         sft_data = json.load(f)
 
     with open(output_file, 'w') as f:
         for example in sft_data:
-            # Together format uses the same messages structure
-            together_example = {
+            # OpenAI format uses the same messages structure
+            openai_example = {
                 "messages": example["messages"]
             }
-            json.dump(together_example, f)
+            json.dump(openai_example, f)
             f.write('\n')
 
     print(f"  Converted {len(sft_data)} examples")
@@ -91,52 +41,55 @@ def convert_to_together_jsonl(input_file: str, output_file: str) -> int:
     
     return len(sft_data)
 
-
-# =============================================================================
-# FINE-TUNING OPERATIONS
-# =============================================================================
-
-def upload_training_file(client: Together, jsonl_file: str) -> str:
-    """Upload training file to Together AI."""
-    print(f"\nUploading {jsonl_file} to Together AI...")
+def upload_training_file(client: OpenAI, jsonl_file: str) -> str:
+    """Upload training file to OpenAI."""
+    print(f"\nUploading {jsonl_file} to OpenAI...")
     
-    response = client.files.upload(
-        file=jsonl_file,
-        purpose='fine-tune'
-    )
+    with open(jsonl_file, 'rb') as f:
+        response = client.files.create(
+            file=f,
+            purpose='fine-tune'
+        )
     
     file_id = response.id
     print(f"  File ID: {file_id}")
+    
+    # Wait for file to be processed
+    print("  Waiting for file processing...")
+    while True:
+        file_status = client.files.retrieve(file_id)
+        if file_status.status == 'processed':
+            print("  File processed successfully")
+            break
+        elif file_status.status == 'error':
+            raise Exception(f"File processing failed: {file_status.status_details}")
+        time.sleep(2)
     
     return file_id
 
 
 def launch_finetuning(
-    client: Together,
+    client: OpenAI,
     file_id: str,
     base_model: str = DEFAULT_BASE_MODEL,
     n_epochs: int = DEFAULT_EPOCHS,
-    learning_rate: float = DEFAULT_LEARNING_RATE,
-    batch_size: int = DEFAULT_BATCH_SIZE,
     suffix: Optional[str] = None
 ) -> str:
-    """Launch Together AI fine-tuning job."""
+    """Launch OpenAI fine-tuning job."""
     
     print(f"\n{'='*50}")
     print("LAUNCHING FINE-TUNING JOB")
     print(f"{'='*50}")
     print(f"Base model: {base_model}")
     print(f"Epochs: {n_epochs}")
-    print(f"Learning rate: {learning_rate}")
-    print(f"Batch size: {batch_size}")
     print(f"Suffix: {suffix or 'preference-expert'}")
     
-    job = client.fine_tuning.create(
+    job = client.fine_tuning.jobs.create(
         training_file=file_id,
         model=base_model,
-        n_epochs=n_epochs,
-        learning_rate=learning_rate,
-        batch_size=batch_size,
+        hyperparameters={
+            "n_epochs": n_epochs
+        },
         suffix=suffix or "preference-expert"
     )
     
@@ -147,24 +100,18 @@ def launch_finetuning(
     return job_id
 
 
-def check_status(client: Together, job_id: str) -> Tuple[Optional[str], str]:
-    """
-    Check fine-tuning job status.
-    
-    Returns:
-        Tuple of (model_id or None, status_string)
-    """
-    job = client.fine_tuning.retrieve(id=job_id)
+def check_status(client: OpenAI, job_id: str) -> Tuple[Optional[str], str]:
+    job = client.fine_tuning.jobs.retrieve(job_id)
     
     print(f"Status: {job.status}")
     
-    if job.status == "completed":
-        model_name = getattr(job, 'output_name', None) or getattr(job, 'fine_tuned_model', None)
+    if job.status == "succeeded":
+        model_name = job.fine_tuned_model
         print(f"✓ Model ready: {model_name}")
-        return model_name, "completed"
+        return model_name, "succeeded"
         
     elif job.status == "failed":
-        error_msg = getattr(job, 'error', "Unknown error")
+        error_msg = job.error.message if job.error else "Unknown error"
         print(f"✗ Failed: {error_msg}")
         return None, "failed"
         
@@ -173,15 +120,14 @@ def check_status(client: Together, job_id: str) -> Tuple[Optional[str], str]:
         return None, "cancelled"
     
     # Show progress if available
-    if hasattr(job, 'training_steps') and job.training_steps:
-        print(f"Training steps: {job.training_steps}")
+    if job.trained_tokens:
+        print(f"  Trained tokens: {job.trained_tokens}")
     
     return None, job.status
 
 
-def wait_for_completion(client: Together, job_id: str, check_interval: int = 60) -> Optional[str]:
-    """Wait for fine-tuning job to complete."""
-    
+def wait_for_completion(client: OpenAI, job_id: str, check_interval: int = 30) -> Optional[str]:
+
     print(f"\nWaiting for fine-tuning to complete...")
     print(f"Checking every {check_interval} seconds")
     print("-" * 40)
@@ -193,7 +139,7 @@ def wait_for_completion(client: Together, job_id: str, check_interval: int = 60)
         
         model_id, status = check_status(client, job_id)
         
-        if status == "completed":
+        if status == "succeeded":
             return model_id
         elif status in ["failed", "cancelled"]:
             return None
@@ -202,37 +148,36 @@ def wait_for_completion(client: Together, job_id: str, check_interval: int = 60)
         time.sleep(check_interval)
 
 
-def list_jobs(client: Together, limit: int = 10) -> List:
-    """List recent fine-tuning jobs."""
-    
+def list_jobs(client: OpenAI, limit: int = 10) -> List:
+
     print(f"\nRecent fine-tuning jobs (limit {limit}):")
     print("-" * 60)
     
-    jobs = client.fine_tuning.list()
+    jobs = client.fine_tuning.jobs.list(limit=limit)
     
-    for i, job in enumerate(jobs.data[:limit]):
-        model_str = ""
-        if hasattr(job, 'output_name') and job.output_name:
-            model_str = f" → {job.output_name}"
+    for job in jobs.data:
+        model_str = f" → {job.fine_tuned_model}" if job.fine_tuned_model else ""
         print(f"  {job.id}: {job.status} ({job.model}){model_str}")
     
-    return jobs.data[:limit]
+    return jobs.data
 
 
-def cancel_job(client: Together, job_id: str):
-    """Cancel a fine-tuning job."""
+def cancel_job(client: OpenAI, job_id: str):
     print(f"Cancelling job {job_id}...")
-    client.fine_tuning.cancel(id=job_id)
+    client.fine_tuning.jobs.cancel(job_id)
     print("  Job cancelled")
 
 
-# =============================================================================
-# DATA LOADING
-# =============================================================================
+def list_events(client: OpenAI, job_id: str, limit: int = 20):
+    print(f"\nRecent events for job {job_id}:")
+    print("-" * 60)
+    
+    events = client.fine_tuning.jobs.list_events(job_id, limit=limit)
+    
+    for event in reversed(events.data):
+        print(f"  [{event.created_at}] {event.message}")
 
 def load_test_data(splits_file: str = DEFAULT_SPLITS_FILE) -> List[Dict]:
-    """Load test data from saved splits."""
-    
     print(f"\nLoading test data from {splits_file}...")
     
     with open(splits_file, 'r') as f:
@@ -245,8 +190,7 @@ def load_test_data(splits_file: str = DEFAULT_SPLITS_FILE) -> List[Dict]:
 
 
 def load_val_data(splits_file: str = DEFAULT_SPLITS_FILE) -> List[Dict]:
-    """Load validation data from saved splits."""
-    
+
     print(f"\nLoading validation data from {splits_file}...")
     
     with open(splits_file, 'r') as f:
@@ -257,13 +201,7 @@ def load_val_data(splits_file: str = DEFAULT_SPLITS_FILE) -> List[Dict]:
     
     return val_data
 
-
-# =============================================================================
-# EVALUATION PROMPTS
-# =============================================================================
-
 def format_baseline_prompt(prompt: str, response_a: str, response_b: str) -> str:
-    """Format simple prompt for baseline evaluation."""
     return f"""Given the following question and two responses, determine which response is better.
 
 QUESTION: {prompt}
@@ -300,21 +238,14 @@ Think through this step-by-step:
 **ANSWER IN THE FOLLOWING FORMAT:**
 Response [A/B] is better because..."""
 
-
-# =============================================================================
-# EVALUATION FUNCTIONS
-# =============================================================================
-
 def run_baseline_evaluation(
-    client: Together,
+    client: OpenAI,
     test_data: List[Dict],
     model: str = BASELINE_MODEL,
     sample_size: int = 100,
     seed: int = 42
 ) -> Dict:
-    """
-    Run baseline evaluation using simple A/B prompt.
-    """
+
     random.seed(seed)
     
     print(f"\n{'='*50}")
@@ -408,16 +339,13 @@ def run_baseline_evaluation(
 
 
 def evaluate_finetuned_model(
-    client: Together,
+    client: OpenAI,
     model_id: str,
     test_data: List[Dict],
     sample_size: int = 100,
     seed: int = 42,
     verbose: bool = True
 ) -> Dict:
-    """
-    Evaluate fine-tuned model using the exact training prompt format.
-    """
     random.seed(seed)
     
     print(f"\n{'='*50}")
@@ -520,8 +448,7 @@ def evaluate_finetuned_model(
 
 
 def compare_models(baseline_results: Dict, finetuned_results: Dict):
-    """Compare baseline and fine-tuned model results."""
-    
+
     baseline_acc = baseline_results['accuracy']
     finetuned_acc = finetuned_results['accuracy']
     improvement = finetuned_acc - baseline_acc
@@ -549,21 +476,16 @@ def compare_models(baseline_results: Dict, finetuned_results: Dict):
     
     print(f"{'='*60}")
 
-
-# =============================================================================
-# MAIN
-# =============================================================================
-
+# main script
 def main():
     parser = argparse.ArgumentParser(
-        description="Fine-tune and evaluate preference expert model on Together AI"
+        description="Fine-tune and evaluate preference expert model on OpenAI"
     )
+
+    # i wrote this using parsers and allowed for arguments to be added dynamically
     
     subparsers = parser.add_subparsers(dest="command", help="Commands")
-    
-    # -------------------------------------------------------------------------
-    # CONVERT command
-    # -------------------------------------------------------------------------
+
     convert_parser = subparsers.add_parser("convert", help="Convert SFT JSON to JSONL")
     convert_parser.add_argument(
         "--input", type=str, default=DEFAULT_INPUT_FILE,
@@ -573,10 +495,7 @@ def main():
         "--output", type=str, default=DEFAULT_JSONL_FILE,
         help=f"Output JSONL file (default: {DEFAULT_JSONL_FILE})"
     )
-    
-    # -------------------------------------------------------------------------
-    # TRAIN command
-    # -------------------------------------------------------------------------
+
     train_parser = subparsers.add_parser("train", help="Launch fine-tuning")
     train_parser.add_argument(
         "--input", type=str, default=DEFAULT_INPUT_FILE,
@@ -595,14 +514,6 @@ def main():
         help=f"Number of epochs (default: {DEFAULT_EPOCHS})"
     )
     train_parser.add_argument(
-        "--learning-rate", type=float, default=DEFAULT_LEARNING_RATE,
-        help=f"Learning rate (default: {DEFAULT_LEARNING_RATE})"
-    )
-    train_parser.add_argument(
-        "--batch-size", type=int, default=DEFAULT_BATCH_SIZE,
-        help=f"Batch size (default: {DEFAULT_BATCH_SIZE})"
-    )
-    train_parser.add_argument(
         "--suffix", type=str, default=None,
         help="Model name suffix"
     )
@@ -614,32 +525,21 @@ def main():
         "--skip-convert", action="store_true",
         help="Skip conversion (use existing JSONL)"
     )
-    
-    # -------------------------------------------------------------------------
-    # STATUS command
-    # -------------------------------------------------------------------------
+
     status_parser = subparsers.add_parser("status", help="Check job status")
     status_parser.add_argument("job_id", type=str, help="Fine-tuning job ID")
     status_parser.add_argument("--wait", action="store_true", help="Wait for completion")
-    
-    # -------------------------------------------------------------------------
-    # LIST command
-    # -------------------------------------------------------------------------
+    status_parser.add_argument("--events", action="store_true", help="Show job events")
+
     list_parser = subparsers.add_parser("list", help="List fine-tuning jobs")
     list_parser.add_argument(
         "--limit", type=int, default=10,
         help="Number of jobs to list (default: 10)"
     )
-    
-    # -------------------------------------------------------------------------
-    # CANCEL command
-    # -------------------------------------------------------------------------
+
     cancel_parser = subparsers.add_parser("cancel", help="Cancel a job")
     cancel_parser.add_argument("job_id", type=str, help="Job ID to cancel")
-    
-    # -------------------------------------------------------------------------
-    # EVALUATE command
-    # -------------------------------------------------------------------------
+
     eval_parser = subparsers.add_parser("evaluate", help="Evaluate fine-tuned model")
     eval_parser.add_argument("model_id", type=str, help="Fine-tuned model ID")
     eval_parser.add_argument(
@@ -666,10 +566,7 @@ def main():
         "--use-val", action="store_true",
         help="Use validation set instead of test set"
     )
-    
-    # -------------------------------------------------------------------------
-    # BASELINE command
-    # -------------------------------------------------------------------------
+
     baseline_parser = subparsers.add_parser("baseline", help="Run baseline evaluation only")
     baseline_parser.add_argument(
         "--model", type=str, default=BASELINE_MODEL,
@@ -694,23 +591,19 @@ def main():
     
     args = parser.parse_args()
     
-    # Initialize Together AI client
-    api_key = os.environ.get("TOGETHER_API_KEY")
+    # Initialize OpenAI client
+    api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        raise ValueError("TOGETHER_API_KEY environment variable not set")
-    client = Together(api_key=api_key)
-    
-    # =========================================================================
-    # COMMAND HANDLERS
-    # =========================================================================
-    
+        raise ValueError("OPENAI_API_KEY environment variable not set")
+    client = OpenAI(api_key=api_key)
+
     if args.command == "convert":
-        convert_to_together_jsonl(args.input, args.output)
+        convert_to_openai_jsonl(args.input, args.output)
         
     elif args.command == "train":
         # Step 1: Convert to JSONL
         if not args.skip_convert:
-            convert_to_together_jsonl(args.input, args.jsonl)
+            convert_to_openai_jsonl(args.input, args.jsonl)
         
         # Step 2: Upload file
         file_id = upload_training_file(client, args.jsonl)
@@ -721,30 +614,31 @@ def main():
             file_id=file_id,
             base_model=args.model,
             n_epochs=args.epochs,
-            learning_rate=args.learning_rate,
-            batch_size=args.batch_size,
             suffix=args.suffix
         )
         
-        # Step 4: Optionally wait
+        # Step 4: wait if we want
         if args.wait:
             model_id = wait_for_completion(client, job_id)
             if model_id:
                 print(f"\n✓ Fine-tuning complete!")
                 print(f"  Model ID: {model_id}")
                 print(f"\n  To evaluate:")
-                print(f"    python finetune_ultrafeedback.py evaluate {model_id} --compare-baseline")
+                print(f"    python finetune_openai.py evaluate {model_id} --compare-baseline")
             else:
                 print(f"\n✗ Fine-tuning failed or was cancelled")
         else:
             print(f"\n✓ Fine-tuning job launched!")
             print(f"  Job ID: {job_id}")
             print(f"\n  To check status:")
-            print(f"    python finetune_ultrafeedback.py status {job_id}")
+            print(f"    python finetune_openai.py status {job_id}")
             print(f"\n  To wait for completion:")
-            print(f"    python finetune_ultrafeedback.py status {job_id} --wait")
+            print(f"    python finetune_openai.py status {job_id} --wait")
     
     elif args.command == "status":
+        if args.events:
+            list_events(client, args.job_id)
+        
         if args.wait:
             model_id = wait_for_completion(client, args.job_id)
             if model_id:
@@ -774,7 +668,7 @@ def main():
             seed=args.seed
         )
         
-        # Optionally compare to baseline
+        # compare to baseline
         if args.compare_baseline:
             baseline_results = run_baseline_evaluation(
                 client=client,
@@ -786,7 +680,7 @@ def main():
             compare_models(baseline_results, finetuned_results)
         
         # Save results
-        results_file = f"eval_results_{args.model_id.split('/')[-1]}.json"
+        results_file = f"eval_results_{model_id_to_filename(args.model_id)}.json"
         with open(results_file, 'w') as f:
             json.dump({
                 'finetuned': finetuned_results,
@@ -818,6 +712,10 @@ def main():
     
     else:
         parser.print_help()
+
+
+def model_id_to_filename(model_id: str) -> str:
+    return model_id.replace(":", "_").replace("/", "_")
 
 
 if __name__ == "__main__":
