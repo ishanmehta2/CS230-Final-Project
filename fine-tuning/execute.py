@@ -31,7 +31,7 @@ class RewardModel(nn.Module):
         
         # Pool the outputs
         if self.pooling == 'cls':
-            # Use [CLS] token representation
+            # Use CLS token representation
             pooled = outputs.last_hidden_state[:, 0, :]
         elif self.pooling == 'mean':
             # Mean pooling over all tokens
@@ -128,7 +128,6 @@ def main():
     learning_rate = 2e-5
     subsample_size = None  
     
-    print(f"\n=== Training Configuration ===")
     print(f"Model: {model_name}")
     print(f"Device: {device}")
     print(f"Batch size: {batch_size}")
@@ -152,7 +151,6 @@ def main():
     )
     
     # Initialize model
-    print("\n=== Initializing Model ===")
     model = RewardModel(model_name=model_name, pooling='cls')
     model = model.to(device)
     print(f"Model loaded with {sum(p.numel() for p in model.parameters())/1e6:.1f}M parameters")
@@ -182,12 +180,12 @@ def main():
             print(f" Saved best model with val acc: {val_acc:.4f}")
     
     # Final test evaluation
-    print("\n=== Final Test Evaluation ===")
+    print("Final Test Evaluation")
     model.load_state_dict(torch.load('best_model.pt'))
     test_loss, test_acc = evaluate(model, test_loader, device)
     print(f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}")
     
-    print("\n=== Training Complete! ===")
+    print("Training Complete")
     print(f"Best validation accuracy: {best_val_acc:.4f}")
     print(f"Test accuracy: {test_acc:.4f}")
     print(f"Model saved to: best_model.pt")
