@@ -1,24 +1,3 @@
-"""
-Generate Reasoning Traces and SFT Dataset for Preference Learning (UltraFeedback)
-
-This script:
-1. Loads the UltraFeedback Binarized Preferences dataset
-2. Creates train/val/test splits (saved for reproducibility)
-3. Generates reasoning traces using Together AI (Llama 3.3 70B)
-4. Filters for agreements only (to avoid sycophancy)
-5. Creates an SFT dataset with position randomization
-
-Usage:
-    # Full pipeline
-    python generate_reasoning_ultrafeedback.py --sample-size 1000
-    
-    # Just create splits (no reasoning generation)
-    python generate_reasoning_ultrafeedback.py --splits-only --full-dataset-size 30000
-    
-    # Resume from existing reasoning traces
-    python generate_reasoning_ultrafeedback.py --reasoning-file data/reasoning_traces.json
-"""
-
 import json
 import random
 import argparse
@@ -32,11 +11,6 @@ from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
-
-
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
 
 DEFAULT_MODEL = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
 DEFAULT_SAMPLE_SIZE = 1000
@@ -54,29 +28,16 @@ SFT_OUTPUT_FILE = "ultrafeedback_preference_sft.json"
 
 SYSTEM_MESSAGE = """You are an expert at analyzing responses to questions and instructions. Compare two responses objectively and determine which one is better and why. Consider factors like helpfulness, accuracy, relevance, clarity, and overall usefulness to the person asking the question."""
 
-
-# =============================================================================
-# DATA LOADING AND SPLITTING
-# =============================================================================
-
 def load_ultrafeedback_dataset(sample_size: Optional[int] = None) -> List[Dict]:
-    """
-    Load the UltraFeedback Binarized Preferences (Cleaned) dataset.
-    
-    Returns a list of examples with standardized format.
-    """
     print("Loading UltraFeedback dataset...")
     ds = load_dataset("argilla/ultrafeedback-binarized-preferences-cleaned")
     dataset = ds['train']
     
     if sample_size:
         dataset = dataset.select(range(min(sample_size, len(dataset))))
-    
-    # Convert to standardized format
+
     data = []
     for i, example in enumerate(dataset):
-        # Extract responses from the nested structure
-        # chosen/rejected are lists: [{"role": "user", ...}, {"role": "assistant", "content": ...}]
         chosen_content = ""
         rejected_content = ""
         
@@ -84,8 +45,7 @@ def load_ultrafeedback_dataset(sample_size: Optional[int] = None) -> List[Dict]:
             chosen_content = example['chosen'][1].get('content', '')
         if len(example['rejected']) > 1:
             rejected_content = example['rejected'][1].get('content', '')
-        
-        # Skip if either response is empty
+
         if not chosen_content or not rejected_content:
             continue
             
@@ -94,7 +54,6 @@ def load_ultrafeedback_dataset(sample_size: Optional[int] = None) -> List[Dict]:
             'prompt': example['prompt'],
             'chosen_response': chosen_content,
             'rejected_response': rejected_content,
-            # In UltraFeedback, chosen is always preferred (label=1)
             'true_label': 1,  # 1 = chosen preferred, 0 = rejected preferred
         })
     
@@ -109,19 +68,7 @@ def create_splits(
     test_ratio: float = TEST_RATIO,
     seed: int = 42
 ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
-    """
-    Create train/val/test splits.
-    
-    Args:
-        data: Full dataset
-        train_ratio: Fraction for training
-        val_ratio: Fraction for validation
-        test_ratio: Fraction for testing
-        seed: Random seed for reproducibility
-        
-    Returns:
-        Tuple of (train_data, val_data, test_data)
-    """
+
     assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6, "Ratios must sum to 1"
     
     random.seed(seed)
@@ -150,7 +97,6 @@ def save_splits(
     test_data: List[Dict],
     output_dir: str = DEFAULT_OUTPUT_DIR
 ) -> str:
-    """Save splits to a JSON file for reproducibility."""
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     
@@ -176,7 +122,6 @@ def save_splits(
 
 
 def load_splits(filepath: str) -> Tuple[List[Dict], List[Dict], List[Dict]]:
-    """Load previously saved splits."""
     print(f"Loading splits from {filepath}...")
     with open(filepath, 'r') as f:
         splits = json.load(f)
@@ -188,13 +133,7 @@ def load_splits(filepath: str) -> Tuple[List[Dict], List[Dict], List[Dict]]:
     print(f"  Train: {len(train_data)}, Val: {len(val_data)}, Test: {len(test_data)}")
     return train_data, val_data, test_data
 
-
-# =============================================================================
-# REASONING TRACE GENERATION
-# =============================================================================
-
 def format_reasoning_prompt(prompt: str, response_a: str, response_b: str) -> str:
-    """Format the prompt for reasoning trace generation."""
     return f"""A user asked a question and received two different responses.
 Analyze which response is better and explain why.
 
@@ -226,22 +165,7 @@ def generate_reasoning_traces(
     save_interval: int = 50,
     output_file: Optional[str] = None
 ) -> List[Dict]:
-    """
-    Generate reasoning traces for preference data using an LLM.
-    
-    Only keeps examples where the model agrees with ground truth (to avoid sycophancy).
-    
-    Args:
-        train_data: Training data with preference pairs
-        client: Together AI client
-        model: Model to use for reasoning
-        sample_size: Optional limit on number of examples to process
-        save_interval: Save progress every N examples
-        output_file: File to save intermediate results
-        
-    Returns:
-        List of examples with reasoning traces (agreements only)
-    """
+
     # Sample if needed
     if sample_size and sample_size < len(train_data):
         data_to_process = random.sample(train_data, sample_size)
@@ -263,10 +187,6 @@ def generate_reasoning_traces(
         print(f"[{i+1}/{len(data_to_process)}] Processing {example['example_id']}...")
         
         try:
-            # For UltraFeedback, chosen is always the preferred response
-            # We randomly assign to A/B for the reasoning prompt to avoid bias
-            # But we track which is which
-            
             if random.random() < 0.5:
                 # chosen = A, rejected = B
                 response_a = example['chosen_response']
@@ -296,7 +216,6 @@ def generate_reasoning_traces(
             
             reasoning_response = response.choices[0].message.content.strip()
 
-            # Parse the model's answer
             model_choice = None
             
             if "ANSWER: A" in reasoning_response or "ANSWER:A" in reasoning_response:
@@ -363,13 +282,7 @@ def generate_reasoning_traces(
 
     return reasoning_data
 
-
-# =============================================================================
-# SFT DATASET CREATION
-# =============================================================================
-
 def extract_reasoning_from_response(reasoning_response: str, correct_choice: str) -> str:
-    """Extract and clean the reasoning from the model's response."""
     try:
         if "REASONING:" in reasoning_response:
             reasoning_part = reasoning_response.split("REASONING:", 1)[1].strip()
@@ -388,8 +301,7 @@ def extract_reasoning_from_response(reasoning_response: str, correct_choice: str
             
             if reasoning_part:
                 return reasoning_part
-                
-        # Fallback: try to extract after "better because"
+
         if "better because" in reasoning_response.lower():
             parts = reasoning_response.lower().split("better because", 1)
             if len(parts) > 1:
@@ -405,18 +317,7 @@ def generate_sft_dataset(
     reasoning_data: List[Dict],
     output_file: str
 ) -> List[Dict]:
-    """
-    Generate SFT dataset from reasoning traces with position randomization.
-    
-    Position randomization prevents the model from learning positional biases.
-    
-    Args:
-        reasoning_data: List of examples with reasoning traces
-        output_file: Path to save the SFT dataset
-        
-    Returns:
-        List of SFT training examples
-    """
+
     sft_dataset = []
 
     print(f"\n{'='*60}")
@@ -440,8 +341,6 @@ def generate_sft_dataset(
         # Extract reasoning
         reasoning_text = extract_reasoning_from_response(reasoning_response, correct_choice)
 
-        # Apply fresh position randomization for SFT
-        # (independent of the randomization used during reasoning generation)
         flip_positions = random.choice([True, False])
 
         if flip_positions:
@@ -453,7 +352,6 @@ def generate_sft_dataset(
             display_response_b = rejected_response
             display_correct_choice = 'A'  # chosen is A
 
-        # Create the user prompt (matches format used in rollout_tournament.py)
         user_prompt = f"""Which response is better? Analyze the differences between these two responses.
 
 Original Post:
@@ -523,7 +421,6 @@ Response [A/B] is better because..."""
 
 
 def preview_sft_examples(sft_dataset: List[Dict], num_examples: int = 2):
-    """Preview some examples from the SFT dataset."""
     print(f"\n{'='*80}")
     print(f"PREVIEW OF SFT DATASET ({num_examples} examples)")
     print(f"{'='*80}")
@@ -540,11 +437,7 @@ def preview_sft_examples(sft_dataset: List[Dict], num_examples: int = 2):
         print(example['messages'][2]['content'][:300] + "...")
         print("-" * 80)
 
-
-# =============================================================================
-# MAIN
-# =============================================================================
-
+# main
 def main():
     parser = argparse.ArgumentParser(
         description="Generate reasoning traces and SFT dataset for UltraFeedback"
@@ -613,11 +506,7 @@ def main():
     splits_path = output_dir / SPLITS_FILE
     reasoning_path = output_dir / REASONING_OUTPUT_FILE
     sft_path = output_dir / SFT_OUTPUT_FILE
-    
-    # =========================================================================
-    # STEP 1: Load or create data splits
-    # =========================================================================
-    
+
     if args.splits_file:
         # Load existing splits
         train_data, val_data, test_data = load_splits(args.splits_file)
@@ -640,11 +529,7 @@ def main():
     if args.splits_only:
         print("\n✓ Splits created. Exiting (--splits-only mode)")
         return
-    
-    # =========================================================================
-    # STEP 2: Generate or load reasoning traces
-    # =========================================================================
-    
+
     if args.reasoning_file:
         # Load existing reasoning traces
         print(f"\nLoading existing reasoning traces from {args.reasoning_file}...")
@@ -676,11 +561,7 @@ def main():
         with open(reasoning_path, 'w') as f:
             json.dump(reasoning_data, f, indent=2)
         print(f"\nReasoning traces saved to: {reasoning_path}")
-    
-    # =========================================================================
-    # STEP 3: Generate SFT dataset
-    # =========================================================================
-    
+
     print("\n" + "="*60)
     print("STEP 3: GENERATING SFT DATASET")
     print("="*60)
@@ -690,11 +571,7 @@ def main():
     # Optional preview
     if args.preview:
         preview_sft_examples(sft_dataset)
-    
-    # =========================================================================
-    # SUMMARY
-    # =========================================================================
-    
+
     print("\n" + "="*60)
     print("PIPELINE COMPLETE")
     print("="*60)
