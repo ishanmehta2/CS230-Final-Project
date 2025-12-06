@@ -2,7 +2,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-#configs data
 data = [
     ("cls", 512, "1e-5", 0.2,  9.4,  8.4),
     ("cls", 512, "1e-5", 0.1,  8.2,  7.4),
