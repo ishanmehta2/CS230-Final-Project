@@ -4,7 +4,6 @@ from transformers import AutoModel, AutoTokenizer
 from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset
 
-# ----------------- Dataset -----------------
 class PreferenceDataset(Dataset):
     def __init__(self, data, tokenizer, max_length=256):
         self.data = data
@@ -49,13 +48,7 @@ class PreferenceDataset(Dataset):
 
 # ----------------- Reward Model -----------------
 class RewardModel(nn.Module):
-    """
-    pooling options:
-      - 'cls'   : CLS token
-      - 'mean'  : mean pooling
-      - 'attn'  : learned attention pooling
-      - 'multi' : concat([CLS, mean]) -> bigger head
-    """
+
     def __init__(self, model_name='distilbert-base-uncased',
                  pooling='cls', dropout=0.1):
         super().__init__()
@@ -178,7 +171,6 @@ from itertools import product
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print("Using device:", device)
 
-# ----------------- Base config -----------------
 model_name = 'distilbert-base-uncased'
 batch_size = 32
 base_epochs = 3
@@ -193,12 +185,11 @@ DROPOUTS = [0.1, 0.2]
 # Compute safeguards
 MAX_TOTAL_UPDATES = 40_000      # total training steps across all configs
 MAX_BATCHES_PER_EPOCH = 300     # cap per epoch (for huge datasets)
-EARLY_STOP_AFTER_EPOCH1_IF_ACC_BELOW = 0.52  # tweak as you like
+EARLY_STOP_AFTER_EPOCH1_IF_ACC_BELOW = 0.52  
 
 total_updates_so_far = 0
 results = []
 
-# ----------------- Load dataset once -----------------
 print("\n=== Loading UltraFeedback dataset ===")
 ds = load_dataset("argilla/ultrafeedback-binarized-preferences-cleaned")
 dataset = ds['train']
@@ -330,6 +321,5 @@ print(df_results.head(20).to_markdown(index=False))
 df_results.to_csv("grid_search_results.csv", index=False)
 df_results.to_markdown("grid_search_results.md", index=False)
 
-# LaTeX export (for research papers)
 with open("grid_search_results.tex", "w") as f:
     f.write(df_results.to_latex(index=False))
